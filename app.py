@@ -539,17 +539,21 @@ def load_seller_profile() -> dict:
         pass
     # Fallback defaults — update these only if Firestore sync hasn't run yet.
     return {
-        "firm_name":        "SWAMI DEVI DYAL HOSPITAL",
+        "firm_name":        "SHRI NAMDEV MEDICOSE",
         "address":          "Panchkula, Haryana, India",
-        "contact":          "+91 93508-26712 | joshikhanpur@gmail.com",
-        "gstin":            "06AAAAA0000A1Z5",
-        "bank_details":     "SBI | A/C: 1234567890 | IFSC: SBIN0001234",
-        "upi_id":           "9350826712@sbi",
+        "contact":          "91 90507-52290 | namdevsushil905@gmail.com",
+        "gstin":            "",
+        "bank_details":     "Axis Bank | A/C: 917020055729535 | IFSC: UTIB0002078",
+        "upi_id":           "9050752290@axisbank",
         "state":            "Haryana",
-        "dl_no":            "DL-HR-PZK-12345",
+        "dl_no":            "14-OB,414-BR",
         "pan_no":           "ABCDE1234F",
         "jurisdiction":     "Panchkula, Haryana",
-        "custom_tc":        "Medicines once supplied cannot be returned under any circumstances.",
+        "custom_tc":        "1. Overdue bills carry an interest @18% per annum.
+                             2. All disputes subject to Panchkula jurisdiction.
+                             3. Goods once sold will not be taken back or exchanged.
+                             4. Our responsibility ceases when the goods leave our godown.
+                             5. Delivery is subject to receipt/realization of advance payment along with the purchase order.",
         "show_batch_invoice": True,
         "show_uom_invoice":   True,
     }
