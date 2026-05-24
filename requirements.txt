@@ -1,3 +1,4 @@
 streamlit
 firebase-admin
 pandas
+reportlab>=4.1.0
