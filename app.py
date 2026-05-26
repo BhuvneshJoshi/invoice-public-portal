@@ -31,6 +31,8 @@ import os
 import io
 import json
 import urllib.parse
+import hmac
+from xml.sax.saxutils import escape as xml_escape
 
 # --- REPORTLAB PDF DEPENDENCIES ---
 from reportlab.lib import colors
@@ -40,6 +42,16 @@ from reportlab.platypus.flowables import HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.barcode.qr import QrCodeWidget
+
+DEFAULT_TERMS_AND_CONDITIONS = (
+    "1. Overdue bills Carry an interest @18% per annum.\n"
+    "2. All disputes subject to Ambala jurisdiction.\n"
+    "3. Goods once sold will not be taken back to exchange.\n"
+    "4. Our responsibility ceases when the goods leave our godown.\n"
+    "5. Delivery is subject to receipt/realization of advance payment along with the purchase order."
+)
+
+DIGITAL_SIGNATURE_NOTE = "This is a digitally signed document. Signature is not required."
 
 st.set_page_config(
     page_title="Document Portal — JB Corporation",
@@ -98,11 +110,16 @@ def clean_text_value(raw_value, fallback=""):
     return text
 
 
+def pdf_safe(raw_value, fallback=""):
+    """Escapes text before embedding it in ReportLab Paragraph XML."""
+    return xml_escape(clean_text_value(raw_value, fallback))
+
+
 def coerce_float_value(raw_value, fallback=0.0):
-    try:
-        return float(raw_value)
-    except (TypeError, ValueError):
-        return fallback
+    parsed = pd.to_numeric(raw_value, errors="coerce")
+    if pd.isna(parsed):
+        return float(fallback)
+    return float(parsed)
 
 
 def format_expiry_mmyy(exp_str):
@@ -255,6 +272,20 @@ class GSTBillingEngine:
             self._process_calculations()
 
     def _process_calculations(self):
+        numeric_defaults = {"mrp": 0.0, "discount_pct": 0.0, "qty": 0.0, "gst_rate": 0.0}
+        text_defaults = {"item_name": "N/A", "batch_no": "N/A", "hsn_code": "3004", "uom": "Units", "expiry_date": "N/A"}
+        for column, fallback in numeric_defaults.items():
+            if column not in self.df.columns:
+                self.df[column] = fallback
+            self.df[column] = pd.to_numeric(self.df[column], errors="coerce").fillna(fallback)
+        for column, fallback in text_defaults.items():
+            if column not in self.df.columns:
+                self.df[column] = fallback
+            self.df[column] = self.df[column].fillna(fallback).astype(str)
+
+        self.df["qty"] = self.df["qty"].clip(lower=0)
+        self.df["discount_pct"] = self.df["discount_pct"].clip(lower=0, upper=100)
+        self.df["gst_rate"] = self.df["gst_rate"].clip(lower=0, upper=100)
         self.df["sale_price_per_unit"] = self.df["mrp"] * (1 - self.df["discount_pct"] / 100)
         self.df["total_sale_price"]    = self.df["sale_price_per_unit"] * self.df["qty"]
         self.df["taxable_value"]       = self.df["total_sale_price"] / (1 + self.df["gst_rate"] / 100)
@@ -335,19 +366,19 @@ class GSTBillingEngine:
         seller_state_code = self.STATE_CODES.get(seller_state_name, "N/A")
 
         _seller_gstin = self.seller.get("gstin", "").strip()
-        _gstin_part   = f" | <b>GSTIN:</b> {_seller_gstin}" if _seller_gstin and _seller_gstin.upper() not in ("N/A", "NONE", "") else ""
+        _gstin_part   = f" | <b>GSTIN:</b> {pdf_safe(_seller_gstin)}" if _seller_gstin and _seller_gstin.upper() not in ("N/A", "NONE", "") else ""
 
-        seller_html = f"""<b>{self.seller.get('firm_name', '').upper()}</b><br/>
+        seller_html = f"""<b>{pdf_safe(self.seller.get('firm_name', '')).upper()}</b><br/>
         <font size="8.5" color="#64748B">
-        {self.seller.get('address', '')}<br/>
-        Contact Communications: {self.seller.get('contact', '')}<br/>
-        <b>State:</b> {seller_state_name} ({seller_state_code}){_gstin_part}
+        {pdf_safe(self.seller.get('address', ''))}<br/>
+        Contact Communications: {pdf_safe(self.seller.get('contact', ''))}<br/>
+        <b>State:</b> {pdf_safe(seller_state_name)} ({pdf_safe(seller_state_code)}){_gstin_part}
         </font>"""
 
-        meta_html = f"""<font size="14" color="{accent_theme.hexval()}"><b>{doc_type.upper()}</b></font><br/><br/>
-        <b>Document No:</b> {doc_number}<br/>
+        meta_html = f"""<font size="14" color="{accent_theme.hexval()}"><b>{pdf_safe(doc_type).upper()}</b></font><br/><br/>
+        <b>Document No:</b> {pdf_safe(doc_number)}<br/>
         <b>Date of Issue:</b> {issue_date_label}<br/>
-        <b>Payment Mode:</b> <font color="{accent_theme.hexval()}"><b>{p_mode}</b></font>"""
+        <b>Payment Mode:</b> <font color="{accent_theme.hexval()}"><b>{pdf_safe(p_mode)}</b></font>"""
 
         header_table = Table(
             [[Paragraph(seller_html, title_left), Paragraph(meta_html, meta_right)]],
@@ -360,22 +391,22 @@ class GSTBillingEngine:
 
         cust_code = self.STATE_CODES.get(self.customer_state, "N/A")
         _pan      = self.seller.get("pan_no", "").strip()
-        _pan_line = f"<b>PAN No:</b> {_pan}<br/>" if _pan and _pan.upper() not in ("N/A", "NONE", "") else ""
+        _pan_line = f"<b>PAN No:</b> {pdf_safe(_pan)}<br/>" if _pan and _pan.upper() not in ("N/A", "NONE", "") else ""
 
         left_profile_html = f"""<b><font color="{primary_navy.hexval()}">SUPPLY CHAIN INFRASTRUCTURE:</font></b><br/>
         <font size="8.5" color="#475569">
-        <b>Drug License (DL) No:</b> {self.seller.get('dl_no', 'N/A')}<br/>
+        <b>Drug License (DL) No:</b> {pdf_safe(self.seller.get('dl_no', 'N/A'))}<br/>
         {_pan_line}</font>"""
 
         c_gst      = customer_info.get("gstin", "").strip()
-        c_gst_html = f"<b>Recipient GSTIN:</b> {c_gst}<br/>" if c_gst and c_gst.upper() != "N/A" else ""
+        c_gst_html = f"<b>Recipient GSTIN:</b> {pdf_safe(c_gst)}<br/>" if c_gst and c_gst.upper() != "N/A" else ""
 
         right_profile_html = f"""<b><font color="{primary_navy.hexval()}">BILLED RECIPIENT PROFILE:</font></b><br/>
         <font size="8.5" color="#475569">
-        <b>Name:</b> {customer_info.get('name', 'Counter Retail Customer')}<br/>
-        <b>Contact:</b> {customer_info.get('contact', 'N/A')}<br/>
-        <b>Address:</b> {customer_info.get('address', 'N/A')}<br/>
-        {c_gst_html}<b>Place of Supply:</b> {self.customer_state} (State Code: {cust_code})
+        <b>Name:</b> {pdf_safe(customer_info.get('name', 'Counter Retail Customer'))}<br/>
+        <b>Contact:</b> {pdf_safe(customer_info.get('contact', 'N/A'))}<br/>
+        <b>Address:</b> {pdf_safe(customer_info.get('address', 'N/A'))}<br/>
+        {c_gst_html}<b>Place of Supply:</b> {pdf_safe(self.customer_state)} (State Code: {pdf_safe(cust_code)})
         </font>"""
 
         profile_table = Table(
@@ -409,15 +440,15 @@ class GSTBillingEngine:
         table_payload = [[Paragraph(h, cell_hdr) for h in headers]]
 
         for idx, row in self.df.iterrows():
-            row_cells = [Paragraph(str(idx + 1), cell_center), Paragraph(str(row["item_name"]), cell_left)]
+            row_cells = [Paragraph(str(idx + 1), cell_center), Paragraph(pdf_safe(row["item_name"]), cell_left)]
             if show_batch:
-                row_cells.append(Paragraph(str(row.get("batch_no", "N/A")), cell_center))
+                row_cells.append(Paragraph(pdf_safe(row.get("batch_no", "N/A")), cell_center))
             row_cells.extend([
-                Paragraph(str(row["hsn_code"]), cell_center),
-                Paragraph(str(row.get("expiry_date", "N/A")), cell_center),
+                Paragraph(pdf_safe(row["hsn_code"]), cell_center),
+                Paragraph(pdf_safe(row.get("expiry_date", "N/A")), cell_center),
             ])
             if show_uom:
-                row_cells.append(Paragraph(str(row.get("uom", "Pills")), cell_center))
+                row_cells.append(Paragraph(pdf_safe(row.get("uom", "Pills")), cell_center))
             row_cells.extend([
                 Paragraph(f"{row['qty']:.0f}", cell_center),
                 Paragraph(f"{row['mrp']:,.2f}", cell_center),
@@ -480,14 +511,15 @@ class GSTBillingEngine:
         # ── Footer (mirrors private app: soft-copy QR + T&C side by side) ──
         custom_terms = clean_text_value(
             self.seller.get("custom_tc", ""),
-            "1. Overdue bills carry an interest @18% per annum.\n2. All disputes subject to Panchkula jurisdiction.\n3. Goods once sold will not be taken back or exchanged."
-        ).replace("&", "&amp;").replace("\n", "<br/>")
+            DEFAULT_TERMS_AND_CONDITIONS
+        )
+        custom_terms = "<br/>".join(xml_escape(line) for line in custom_terms.splitlines())
 
         footer_html = f"""
         <b>TERMS &amp; CONDITIONS:</b><br/>
         {custom_terms}<br/>
-        <br/><b>Bank Details:</b> {self.seller.get('bank_details', 'N/A')}<br/>
-        <font color="#94A3B8"><i>* Cloud-verified electronic statement. Digitally generated — no physical signature required.</i></font>
+        <br/><b>Bank Details:</b> {pdf_safe(self.seller.get('bank_details', 'N/A'))}<br/>
+        <font color="#94A3B8"><i>* {DIGITAL_SIGNATURE_NOTE}</i></font>
         """
 
         soft_qr, soft_url = self.generate_soft_copy_qr(
@@ -529,16 +561,7 @@ class GSTBillingEngine:
 @st.cache_data(ttl=300, show_spinner=False)
 def load_seller_profile() -> dict:
     """Loads the firm profile synced by the private ERP app. Falls back to defaults."""
-    try:
-        snap = db.collection("config").document("firm_profile").get()
-        if snap.exists:
-            data = snap.to_dict()
-            data.pop("_synced_at", None)
-            return data
-    except Exception:
-        pass
-    # Fallback defaults — update these only if Firestore sync hasn't run yet.
-    return {
+    fallback_profile = {
         "firm_name":        "SHRI NAMDEV MEDICOSE",
         "address":          "Panchkula, Haryana, India",
         "contact":          "+91 90507-52290 | namdevsushil905@gmail.com",
@@ -548,17 +571,24 @@ def load_seller_profile() -> dict:
         "state":            "Haryana",
         "dl_no":            "14-OB,414-BR",
         "pan_no":           "",
-        "jurisdiction":     "Panchkula, Haryana",
-        "custom_tc": (
-            "1. Overdue bills carry an interest @18% per annum.\n"
-            "2. All disputes subject to Panchkula jurisdiction.\n"
-            "3. Goods once sold will not be taken back or exchanged.\n"
-            "4. Our responsibility ceases when the goods leave our godown.\n"
-            "5. Delivery is subject to receipt/realization of advance payment along with the purchase order."
-        ),
+        "jurisdiction":     "Ambala",
+        "custom_tc":        DEFAULT_TERMS_AND_CONDITIONS,
         "show_batch_invoice": True,
         "show_uom_invoice":   True,
     }
+    try:
+        snap = db.collection("config").document("firm_profile").get()
+        if snap.exists:
+            data = snap.to_dict()
+            data.pop("_synced_at", None)
+            profile = {**fallback_profile, **data}
+            if not clean_text_value(profile.get("custom_tc", ""), ""):
+                profile["custom_tc"] = DEFAULT_TERMS_AND_CONDITIONS
+            return profile
+    except Exception:
+        pass
+    # Fallback defaults — update these only if Firestore sync hasn't run yet.
+    return fallback_profile
 
 
 # =============================================================================
@@ -618,7 +648,7 @@ def validate_token(rows: list[dict], doc_id: str, supplied_token: str) -> bool:
     # Path 1: stored token (written by private app since the Firestore sync update)
     stored_token = clean_text_value(first.get("public_share_token", ""), "")
     if stored_token:
-        return stored_token == supplied_token
+        return hmac.compare_digest(stored_token, supplied_token)
 
     # Path 2: deterministic fallback for older records that pre-date token storage
     computed = build_public_share_token(
@@ -626,7 +656,7 @@ def validate_token(rows: list[dict], doc_id: str, supplied_token: str) -> bool:
         first.get("customer", ""),
         first.get("issue_date")
     )
-    return computed == supplied_token
+    return hmac.compare_digest(computed, supplied_token)
 
 
 def build_cart(rows: list[dict], inv_df: pd.DataFrame) -> list[dict]:
